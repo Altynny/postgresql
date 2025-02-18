@@ -42,6 +42,9 @@ begin
 	drop sequence if exists public.employees_seq;
 	drop sequence if exists public.military_ranks_seq;
 	drop sequence if exists public.measurment_types_seq;
+
+	-- Функции с зависимостями
+	drop function if exists public.measure_settings_insert(numeric, numeric, numeric, numeric, numeric);
 end;
 
 raise notice 'Удаление старых данных выполнено успешно';
@@ -160,6 +163,27 @@ create type interpolation_type as
 	y1 numeric(8,2)
 );
 
+DROP TYPE IF EXISTS public.measure_settings_type;
+CREATE TYPE public.measure_settings_type AS
+(
+	height numeric(8,2),
+	temperature numeric(8,2),
+	pressure numeric(8,2),
+	wind_direction numeric(8,2),
+	wind_speed numeric(8,2)
+);
+
+-- Таблица с константами
+drop table if exists consts;
+create table consts
+(
+	name character varying(50) primary key,
+	value text
+);
+
+insert into consts
+values ('pressure', '750'), ('temperature', '15.9');
+
 raise notice 'Расчетные структуры сформированы';
 
 /*
@@ -194,5 +218,195 @@ end;
 raise notice 'Связи сформированы';
 raise notice 'Структура сформирована успешно';
 
+/*
+ 5. Создание скриптов
+ ==========================================
+ */
+begin
+-- Интерполяция
+ CREATE OR REPLACE FUNCTION public."interpolation"(var_temperature numeric default 22)
+    RETURNS numeric
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+ declare 
+ 	var_interpolation interpolation_type;
+	var_result numeric(8,2) default 0;
+	var_min_temparure numeric(8,2) default 0;
+	var_max_temperature numeric(8,2) default 0;
+	var_denominator numeric(8,2) default 0;
+ begin
+		raise notice 'Расчет интерполяции для температуры %', var_temperature;
 
+		-- Проверим, возможно температура совпадает со значением в справочнике
+		if exists (select 1 from public.calc_temperatures_correction where temperature = var_temperature ) then
+		begin
+			select correction 
+			into  var_result 
+			from  public.calc_temperatures_correction
+			where 
+				temperature = var_temperature;
+		end;
+		else	
+		begin
+			-- Получим диапазон в котором работают поправки
+			select min(temperature), max(temperature) 
+			into var_min_temparure, var_max_temperature
+			from public.calc_temperatures_correction;
+
+			if var_temperature < var_min_temparure or   
+			   var_temperature > var_max_temperature then
+
+				raise exception 'Некорректно передан параметр! Невозможно рассчитать поправку. Значение должно укладываться в диаппазон: %, %',
+					var_min_temparure, var_max_temperature;
+			end if;   
+
+			-- Получим граничные параметры
+
+			select x0, y0, x1, y1 
+			into var_interpolation.x0, var_interpolation.y0, var_interpolation.x1, var_interpolation.y1
+			from
+			(
+				select t1.temperature as x0, t1.correction as y0
+				from public.calc_temperatures_correction as t1
+				where t1.temperature <= var_temperature
+				order by t1.temperature desc
+				limit 1
+			) as leftPart
+			cross join
+			(
+				select t1.temperature as x1, t1.correction as y1
+				from public.calc_temperatures_correction as t1
+				where t1.temperature >= var_temperature
+				order by t1.temperature 
+				limit 1
+			) as rightPart;
+			
+			raise notice 'Граничные значения %', var_interpolation;
+
+			-- Расчет поправки
+			var_denominator := var_interpolation.x1 - var_interpolation.x0;
+			if var_denominator = 0.0 then
+
+				raise exception 'Деление на нуль. Возможно, некорректные данные в таблице с поправками!';
+			
+			end if;
+			
+                       var_result := (var_temperature - var_interpolation.x0) * (var_interpolation.y1 - var_interpolation.y0) / var_denominator + var_interpolation.y0;
+		
+		end;
+		end if;
+
+	        return var_result;
+end;
+$BODY$;
+
+-- Функция для формирования переменной из входных данных
+CREATE OR REPLACE FUNCTION public."measure_settings_insert"(
+	height numeric default 0,
+	temperature numeric default 0,
+	pressure numeric default 750,
+	wind_direction numeric default 0,
+	wind_speed numeric default 0
+)
+    RETURNS measure_settings_type
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+declare
+	var_measure_settings measure_settings_type;
+begin
+	if temperature not between -58 and 58 
+	or pressure not between 500 and 900
+	or wind_direction not between 0 and 59
+	or wind_speed not between 0 and 15
+	then raise exception 'Данные выходят за свои диапазоны!';
+	end if;
+	var_measure_settings := (height, temperature, pressure, wind_direction, wind_speed);
+	return var_measure_settings;
+end;
+$BODY$;
+
+-- Функции форматирования строк для вывода
+---- Дата (ДДЧЧМ)
+CREATE OR REPLACE FUNCTION public."fnHeaderTime"(time_var timestamp without time zone default now())
+    RETURNS text
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+begin
+	return substring(time_var::text, 9, 2) || substring(time_var::text, 12, 2) || substring(time_var::text, 15, 1);
+end
+$BODY$;
+
+---- Высота над уровнем моря (ВВВВ)
+CREATE OR REPLACE FUNCTION public."fnheaderheight"(height numeric default 0)
+    RETURNS text
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+begin
+	height := height::integer;
+	
+	if length(height::text) > 4 then
+	raise exception 'Слишком длинная для отображения строка';
+	end if;
+	
+	return substring('000', length(height::text)) || height::text;
+end
+$BODY$;
+
+---- Отклонение давления (БББ)
+CREATE OR REPLACE FUNCTION public."fnHeaderPressure"(pressure numeric default 500)
+    RETURNS text
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+declare
+	dec_start text default '';
+begin
+	pressure := pressure - (select value::numeric from public.consts where name = 'pressure');
+	pressure := pressure::integer;
+	if pressure < 0
+	then
+		dec_start := '5' ;
+		pressure := substring(pressure::text, 2);
+	end if;
+	
+	if length(dec_start) + length(pressure::text) >= 4
+	then 
+		raise exception 'Слишком длинная для отображения строка';
+	end if;
+	
+	return dec_start || substring('00', length(dec_start) + length(pressure::text)) || pressure::text;
+end;
+$BODY$;
+
+---- Отклонение температуры (ТТ)
+CREATE OR REPLACE FUNCTION public."fnHeaderTemperature"(temperature numeric default 22)
+    RETURNS text
+    LANGUAGE 'plpgsql'
+    COST 100
+    VOLATILE PARALLEL UNSAFE
+AS $BODY$
+declare
+	dec_start text default '';
+begin
+	temperature := temperature + interpolation(temperature) - (select value::numeric from public.consts where name = 'temperature');
+	temperature := temperature::integer;
+	
+	if length(temperature::text) > 2
+	then 
+		raise exception 'Слишком длинная для отображения строка';
+	end if;
+	
+	return substring('0', length(temperature::text)) || temperature::text;
+end;
+$BODY$;
+end;
 end $$;
