@@ -182,7 +182,11 @@ create table consts
 );
 
 insert into consts
-values ('pressure', '750'), ('temperature', '15.9');
+values ('pressure', '750'), ('temperature', '15.9'), 
+('temp_min', '-58'), ('temp_max', '58'),
+('pressure_min', '500'), ('pressure_max', '900'),
+('wind_direction_min', '0'), ('wind_direction_max', '59'),
+('wind_speed_min', '0'), ('wind_speed_max', '15');
 
 raise notice 'Расчетные структуры сформированы';
 
@@ -316,12 +320,30 @@ CREATE OR REPLACE FUNCTION public."measure_settings_insert"(
     VOLATILE PARALLEL UNSAFE
 AS $BODY$
 declare
+	temp_min integer;
+	temp_max integer;
+	pressure_min integer;
+	pressure_max integer;
+	wind_direction_min integer;
+	wind_direction_max integer;
+	wind_speed_min integer;
+	wind_speed_max integer;
+
 	var_measure_settings measure_settings_type;
 begin
-	if temperature not between -58 and 58 
-	or pressure not between 500 and 900
-	or wind_direction not between 0 and 59
-	or wind_speed not between 0 and 15
+	select value::integer into temp_min from public.consts where name = 'temp_min';
+	select value::integer into temp_max from public.consts where name = 'temp_max';
+	select value::integer into pressure_min from public.consts where name = 'pressure_min';
+	select value::integer into pressure_max from public.consts where name = 'pressure_max';
+	select value::integer into wind_direction_min from public.consts where name = 'wind_direction_min';
+	select value::integer into wind_direction_max from public.consts where name = 'wind_direction_max';
+	select value::integer into wind_speed_min from public.consts where name = 'wind_speed_min';
+	select value::integer into wind_speed_max from public.consts where name = 'wind_speed_max';
+	
+	if temperature not between temp_min and temp_max 
+	or pressure not between pressure_min and pressure_max
+	or wind_direction not between wind_direction_min and wind_direction_max
+	or wind_speed not between wind_speed_min and wind_speed_max
 	then raise exception 'Данные выходят за свои диапазоны!';
 	end if;
 	var_measure_settings := (height, temperature, pressure, wind_direction, wind_speed);
