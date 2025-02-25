@@ -197,6 +197,37 @@ create type input_params as
 	bullet_demolition_range numeric(8,2)
 );
 
+-- Таблица средних отклонений температуры воздуха
+drop table if exists air_temperature_deviation;
+create table air_temperature_deviation
+(
+	height integer not null,
+	is_positive boolean not null,
+	data integer[] not null,
+	primary key (height, is_positive)
+);
+
+insert into public.air_temperature_deviation(height, is_positive, data)
+values 
+(200,  false, array[-1,-2,-3,-4,-5,-6,-7,-8,-8,-9,-20,-29,-39,-49]),
+(200,  true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(400,  false, array[-1,-2,-3,-4,-5,-6,-6,-7,-8,-9,-19,-29,-38,-48]),
+(400,  true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(800,  false, array[-1,-2,-3,-4,-5,-6,-6,-7,-7,-8,-18,-28,-37,-46]),
+(800,  true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(1200, false, array[-1,-2,-3,-4,-4,-5,-5,-6,-7,-8,-17,-26,-35,-44]),
+(1200, true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(1600, false, array[-1,-2,-3,-3,-4,-4,-5,-6,-7,-7,-17,-25,-34,-42]),
+(1600, true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(2000, false, array[-1,-2,-3,-3,-4,-4,-5,-6,-6,-7,-16,-24,-32,-40]),
+(2000, true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(2400, false, array[-1,-2,-2,-3,-4,-4,-5,-5,-6,-7,-15,-23,-31,-38]),
+(2400, true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(3000, false, array[-1,-2,-2,-3,-4,-4,-4,-5,-5,-6,-15,-22,-30,-37]),
+(3000, true, array[1,2,3,4,5,6,7,8,9,10,20,30]),
+(4000, false, array[-1,-2,-2,-3,-4,-4,-4,-4,-5,-6,-14,-20,-27,-34]),
+(4000, true, array[1,2,3,4,5,6,7,8,9,10,20,30]);
+
 raise notice 'Расчетные структуры сформированы';
 
 /*
@@ -641,7 +672,30 @@ begin
 end;
 $body$;
 
-
+-- Функция для подсчёта ошибочных данных
+drop function if exists public.fn_check_for_exception(numeric, numeric, numeric, numeric, numeric, numeric);
+create or replace function public.fn_check_for_exception(
+	par_height numeric,
+	par_temperature numeric,
+	par_pressure numeric,
+	par_wind_direction numeric,
+	par_wind_speed numeric,
+	par_bullet_demolition_range numeric)
+    returns integer
+    language 'plpgsql'
+as $body$
+declare
+	var_params public.input_params;
+begin
+	
+	var_params = fn_check_input_params(par_height,par_height,par_pressure,par_wind_direction,par_wind_speed,par_bullet_demolition_range);
+	-- Если ввод параметров не выдал ошибку, результатом функции будет 1
+	return 1;
+	-- Если же данные некорректны и внутри функции было вызвано исключение, результат 0
+	exception when raise_exception then
+		return 0;
+end;
+$body$;
 
 raise notice 'Структура сформирована успешно';
 end $$;
@@ -760,4 +814,3 @@ begin
 	raise notice 'Набор тестовых данных сформирован успешно';
 	
 end $$;
-
